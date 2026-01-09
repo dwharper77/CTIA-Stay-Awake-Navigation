@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stay Awake Navigation</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    padding: 20px;
+    background: #f5f5f5;
+    text-align: center;
+  }
+  button {
+    padding: 15px 25px;
+    font-size: 18px;
+    margin: 15px 0;
+    border: none;
+    border-radius: 8px;
+    background: #007bff;
+    color: white;
+  }
+  #status {
+    margin-top: 20px;
+    font-size: 18px;
+    font-weight: bold;
+  }
+</style>
+</head>
+<body>
+
+<h2>Stay Awake Navigation</h2>
+<p>Workflow: tap <strong>Start Navigation</strong> to open Google Maps, return here, then tap <strong>Enable Stay Awake</strong> to start the session.</p>
+
+<button id="navButton">Start Navigation</button>
+
+<div id="warningBanner" style="display:none; margin:16px auto 0; max-width:520px; background:#fff3cd; color:#664d03; padding:12px; border-radius:8px; text-align:left;"></div>
+
+<button id="wakeButton">Enable Stay Awake (Start Session)</button>
+<button id="endButton" disabled style="background:#6c757d;">End Session</button>
+
+<div id="status">Status: Idle</div>
+
+<div id="session" style="margin-top:16px; font-size:14px; text-align:left; max-width:520px; margin-left:auto; margin-right:auto; background:#fff; padding:12px; border-radius:8px;">
+  <div><strong>Session</strong></div>
+  <div id="elapsed" style="margin-top:8px;">Elapsed: 00:00:00</div>
+  <div id="gpsStatus" style="margin-top:6px;">GPS: Not started</div>
+  <div id="focusStatus" style="margin-top:6px;">Focus interruptions: 0</div>
+  <div style="margin-top:10px; font-weight:bold;">Event log</div>
+  <div id="eventLog" style="margin-top:6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; font-size:12px; color:#333; background:#f8f9fa; padding:8px; border-radius:6px; max-height:180px; overflow:auto;">(no events yet)</div>
+</div>
+
+<div id="summary" style="display:none; margin-top:16px; font-size:14px; text-align:left; max-width:520px; margin-left:auto; margin-right:auto; background:#fff; padding:12px; border-radius:8px;">
+  <div><strong>Run Summary</strong></div>
+  <div id="sumElapsed" style="margin-top:8px;"></div>
+  <div id="sumFocus"></div>
+  <div id="sumGpsFailures"></div>
+  <div id="sumGpsFixes"></div>
+  <button id="exportCsvButton" style="margin-top:10px; width:100%;">Export GPS Log (.csv)</button>
+  <button id="exportLogButton" style="margin-top:10px; width:100%; background:#198754;">Export Event Log (.txt)</button>
+</div>
+
+<div id="details" style="margin-top:16px; font-size:14px; text-align:left; max-width:520px; margin-left:auto; margin-right:auto; background:#fff; padding:12px; border-radius:8px;">
+  <div><strong>Diagnostics</strong></div>
+  <div id="diagUrl"></div>
+  <div id="diagWakeSupport"></div>
+  <div id="diagWakeState"></div>
+  <div id="diagMaps"></div>
+</div>
+
+<!-- iOS silent video trick -->
+<video id="iosVideo" autoplay muted loop playsinline style="display:none">
+  <source src="data:video/mp4;base64,AAAA" type="video/mp4">
+</video>
+
+<script>
+let wakeLock = null;
+const forceIOS = new URLSearchParams(window.location.search).get("forceIOS") === "1";
+const isIOS = forceIOS || /iPhone|iPad|iPod/.test(navigator.userAgent);
+const isAndroid = /Android/i.test(navigator.userAgent);
+let keepAwakeEnabled = false;
+let sessionActive = false;
+let mapsLaunchState = "Not started";
+let mapsLaunchNote = "";
+let lastNavTapAt = 0;
+let lastHiddenAt = 0;
+let lastShownAt = Date.now();
+let lastWakeLockError = "";
+let lastWakeLockAcquiredAt = 0;
+let lastWakeLockReleasedAt = 0;
+
+// Simple in-page notification log (helps confirm when things stopped/started).
+const EVENT_LOG_MAX = 40;
+let eventLog = [];
+
+function logEvent(message) {
+  const ts = formatTime(Date.now());
+  eventLog.unshift(`[${ts}] ${message}`);
+  if (eventLog.length > EVENT_LOG_MAX) eventLog = eventLog.slice(0, EVENT_LOG_MAX);
+  const el = document.getElementById("eventLog");
+  if (el) el.innerText = eventLog.join("\n");
+}
+
+// Session + logging
+const GPS_INTERVAL_MS = 1 * 60 * 1000;
+const GPS_STALE_ALERT_MS = 10 * 60 * 1000;
+const GPS_MAX_ACCURACY_METERS = 100; // higher = worse accuracy
+
+let gpsLog = [];
+let gpsFailures = 0;
+let focusInterruptions = 0;
+let lastGpsFixAt = 0;
+let gpsIntervalId = 0;
+let gpsStaleCheckId = 0;
+let timerIntervalId = 0;
+let sessionStartMs = 0;
+let elapsedMs = 0;
+let lastTimerTickMs = 0;
+let lastStaleAlertAt = 0;
+
+// Audio
+let audioCtx = null;
+let audioEnabled = false;
+
+function formatTime(ms) {
+  try {
+    return new Date(ms).toLocaleTimeString();
+  } catch {
+    return "";
+  }
+}
+
+function formatElapsed(ms) {
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = String(Math.floor(totalSeconds / 3600)).padStart(2, "0");
+  const minutes = String(Math.floor((totalSeconds % 3600) / 60)).padStart(2, "0");
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  return `${hours}:${minutes}:${seconds}`;
+}
+
+function setStatus(text) {
+  document.getElementById("status").innerText = `Status: ${text}`;
+  updateDiagnostics();
+}
+
+function showWarning(message) {
+  const el = document.getElementById("warningBanner");
+  el.style.display = message ? "block" : "none";
+  el.innerText = message || "";
+}
+
+function clearWarning() {
+  showWarning("");
+}
+
+function setText(id, text) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.innerText = text;
+}
+
+function getWakeLockStateText() {
+  if (!keepAwakeEnabled) return "Off";
+  if (wakeLock) return "On (held by this page)";
+  if (lastWakeLockError) return `Off (error: ${lastWakeLockError})`;
+  return "On (requested, not currently held)";
+}
+
+function updateDiagnostics() {
+  setText("diagUrl", `URL: ${window.location.href}`);
+  setText(
+    "diagWakeSupport",
+    `Wake Lock: ${isIOS ? "iOS fallback (silent video)" : (("wakeLock" in navigator) ? "Supported" : "Not supported")}`
+  );
+  setText("diagWakeState", `Wake lock: ${getWakeLockStateText()}`);
+
+  // Simple signal only: when the user tapped Start Navigation.
+  setText(
+    "diagMaps",
+    lastNavTapAt ? `Google Maps: Start Navigation tapped at ${formatTime(lastNavTapAt)}` : "Google Maps: Not started"
+  );
+
+  // Session info
+  const elapsedEl = document.getElementById("elapsed");
+  if (elapsedEl) elapsedEl.innerText = `Elapsed: ${formatElapsed(elapsedMs)}`;
+
+  const gpsEl = document.getElementById("gpsStatus");
+  if (gpsEl) {
+    if (!sessionActive) {
+      gpsEl.innerText = "GPS: Not started";
+    } else if (lastGpsFixAt) {
+      const ageSec = Math.floor((Date.now() - lastGpsFixAt) / 1000);
+      gpsEl.innerText = `GPS: ${gpsLog.length} fixes, last ${ageSec}s ago (failures: ${gpsFailures})`;
+    } else {
+      gpsEl.innerText = `GPS: No fixes yet (failures: ${gpsFailures})`;
+    }
+  }
+
+  const focusEl = document.getElementById("focusStatus");
+  if (focusEl) focusEl.innerText = `Focus interruptions: ${focusInterruptions}`;
+}
+
+function getSecureContextHint() {
+  // Wake Lock requires a secure context. On Android, opening local files often uses content://
+  // which is not considered secure, so the API will be unavailable or will throw.
+  const protocol = window.location.protocol;
+  const href = window.location.href;
+
+  if (window.isSecureContext) return null;
+
+  if (protocol === "content:") {
+    return "Opened as content:// (not secure). Serve this page over https:// or http://localhost.";
+  }
+  if (protocol === "file:") {
+    return "Opened as file:// (not secure). Serve this page over https:// or http://localhost.";
+  }
+  if (protocol === "http:" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1")) {
+    return null;
+  }
+  return `Not a secure context (${protocol}). Use https:// (or http://localhost). Current URL: ${href}`;
+}
+
+function updateWakeButtonState() {
+  const wakeBtn = document.getElementById("wakeButton");
+  if (wakeBtn) wakeBtn.disabled = !!sessionActive;
+}
+
+async function enableWakeLock() {
+  keepAwakeEnabled = true;
+  setStatus("Activating…");
+
+  if (isIOS) {
+    // iOS fallback: silent looping video
+    const vid = document.getElementById("iosVideo");
+    try {
+      await vid.play();
+      lastWakeLockAcquiredAt = Date.now();
+      logEvent("Wake mode started (iOS video fallback)");
+      setStatus("iOS wake mode active");
+    } catch (e) {
+      setStatus("Tap the screen to activate iOS wake mode");
+    }
+    return;
+  }
+
+  const secureHint = getSecureContextHint();
+  if (secureHint) {
+    setStatus(`Wake lock blocked. ${secureHint}`);
+    return;
+  }
+
+  if (!("wakeLock" in navigator)) {
+    setStatus("Wake Lock API not available in this browser/context");
+    return;
+  }
+
+  // Android Wake Lock API
+  try {
+    lastWakeLockError = "";
+    wakeLock = await navigator.wakeLock.request("screen");
+    lastWakeLockAcquiredAt = Date.now();
+    logEvent("Wake lock acquired");
+    setStatus("Android wake lock active");
+
+    wakeLock.addEventListener("release", () => {
+      wakeLock = null;
+      lastWakeLockReleasedAt = Date.now();
+
+      // If we didn't intentionally end the session and we're still visible, treat as unexpected.
+      if (sessionActive && document.visibilityState === "visible") {
+        playAlert();
+        showWarning("Wake lock released unexpectedly. Tap 'Enable Stay Awake' again.");
+        logEvent("Wake lock released unexpectedly (while visible)");
+      } else {
+        logEvent("Wake lock released");
+      }
+      setStatus("Wake lock released");
+    });
+  } catch (err) {
+    const name = err && err.name ? err.name : "Error";
+    const message = err && err.message ? err.message : "Wake lock request failed";
+    lastWakeLockError = `${name}: ${message}`;
+    logEvent(`Wake lock request failed: ${lastWakeLockError}`);
+    setStatus(`${name}: ${message}`);
+  }
+}
+
+function ensureAudio() {
+  // Must be called from a user gesture.
+  try {
+    if (!audioCtx) {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return;
+      audioCtx = new Ctx();
+    }
+    if (audioCtx.state === "suspended") {
+      audioCtx.resume();
+    }
+    audioEnabled = true;
+  } catch {
+    audioEnabled = false;
+  }
+}
+
+function playAlert() {
+  // Short beep. If audio is blocked, we still show warnings.
+  if (!audioEnabled || !audioCtx) return;
+  try {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 880;
+    gain.gain.value = 0.0001;
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+
+    const now = audioCtx.currentTime;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.linearRampToValueAtTime(0.15, now + 0.02);
+    gain.gain.linearRampToValueAtTime(0.0001, now + 0.20);
+    osc.start(now);
+    osc.stop(now + 0.22);
+  } catch {
+    // ignore
+  }
+}
+
+function startTimer() {
+  sessionStartMs = Date.now();
+  lastTimerTickMs = Date.now();
+  if (timerIntervalId) window.clearInterval(timerIntervalId);
+  timerIntervalId = window.setInterval(() => {
+    if (!sessionActive) return;
+    if (document.visibilityState !== "visible") return;
+    const now = Date.now();
+    elapsedMs += Math.max(0, now - lastTimerTickMs);
+    lastTimerTickMs = now;
+    updateDiagnostics();
+  }, 1000);
+}
+
+function pauseTimer() {
+  if (!sessionActive) return;
+  const now = Date.now();
+  elapsedMs += Math.max(0, now - lastTimerTickMs);
+  lastTimerTickMs = now;
+  updateDiagnostics();
+}
+
+function resumeTimer() {
+  if (!sessionActive) return;
+  lastTimerTickMs = Date.now();
+  updateDiagnostics();
+}
+
+function requestGpsFix({ purpose }) {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation || !navigator.geolocation.getCurrentPosition) {
+      reject(new Error("Geolocation not supported"));
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const fix = {
+          timestamp: new Date().toISOString(),
+          deviceTimestampMs: typeof pos.timestamp === "number" ? pos.timestamp : null,
+          lat: pos.coords.latitude,
+          lon: pos.coords.longitude,
+          accuracy: pos.coords.accuracy,
+          altitude: pos.coords.altitude,
+          altitudeAccuracy: pos.coords.altitudeAccuracy,
+          speed: pos.coords.speed,
+          heading: pos.coords.heading,
+        };
+        resolve({ fix, purpose });
+      },
+      (err) => reject(err),
+      {
+        enableHighAccuracy: true,
+        timeout: 20000,
+        maximumAge: 0,
+      }
+    );
+  });
+}
+
+async function gpsHealthCheck() {
+  try {
+    setStatus("Checking GPS…");
+    const { fix } = await requestGpsFix({ purpose: "health" });
+
+    if (typeof fix.accuracy === "number" && fix.accuracy > GPS_MAX_ACCURACY_METERS) {
+      playAlert();
+      showWarning(`GPS accuracy is low (${Math.round(fix.accuracy)}m). Move to open sky and retry.`);
+      throw new Error("GPS accuracy too low");
+    }
+
+    clearWarning();
+    setStatus("GPS OK");
+    updateWakeButtonState();
+    return true;
+  } catch (e) {
+    playAlert();
+    showWarning("GPS health check failed. Fix GPS/permissions, then try again.");
+    setStatus("GPS check failed");
+    return false;
+  }
+}
+
+async function collectGpsFix() {
+  if (!sessionActive) return;
+  try {
+    const { fix } = await requestGpsFix({ purpose: "interval" });
+
+    if (typeof fix.accuracy === "number" && fix.accuracy > GPS_MAX_ACCURACY_METERS) {
+      gpsFailures += 1;
+      playAlert();
+      showWarning(`GPS accuracy too low (${Math.round(fix.accuracy)}m).`);
+      updateDiagnostics();
+      return;
+    }
+
+    gpsLog.push(fix);
+    lastGpsFixAt = Date.now();
+    clearWarning();
+    updateDiagnostics();
+  } catch {
+    gpsFailures += 1;
+    playAlert();
+    showWarning("GPS fix failed. Ensure Location is ON and permission is granted.");
+    updateDiagnostics();
+  }
+}
+
+function startGpsLogging() {
+  if (gpsIntervalId) window.clearInterval(gpsIntervalId);
+  if (gpsStaleCheckId) window.clearInterval(gpsStaleCheckId);
+
+  // Collect one immediately, then every 1 minute.
+  collectGpsFix();
+  gpsIntervalId = window.setInterval(collectGpsFix, GPS_INTERVAL_MS);
+
+  // Stale check every minute.
+  gpsStaleCheckId = window.setInterval(() => {
+    if (!sessionActive) return;
+    if (!lastGpsFixAt) return;
+    const age = Date.now() - lastGpsFixAt;
+    if (age > GPS_STALE_ALERT_MS) {
+      const now = Date.now();
+      if (!lastStaleAlertAt || now - lastStaleAlertAt > 2 * 60 * 1000) {
+        lastStaleAlertAt = now;
+        playAlert();
+        showWarning("No GPS fix for over 10 minutes.");
+      }
+    }
+  }, 60 * 1000);
+}
+
+function downloadTextFile({ filename, content, mimeType }) {
+  const blob = new Blob([content], { type: mimeType || "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function safeFileTimestamp() {
+  return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
+function exportGpsCsv() {
+  const header = "timestamp,deviceTimestampMs,lat,lon,accuracy,altitude,altitudeAccuracy,speed,heading";
+  const rows = gpsLog.map((fix) => {
+    const ts = fix.timestamp ?? "";
+    const deviceTs = (fix.deviceTimestampMs ?? "").toString();
+    const lat = (fix.lat ?? "").toString();
+    const lon = (fix.lon ?? "").toString();
+    const acc = (fix.accuracy ?? "").toString();
+    const alt = (fix.altitude ?? "").toString();
+    const altAcc = (fix.altitudeAccuracy ?? "").toString();
+    const speed = (fix.speed ?? "").toString();
+    const heading = (fix.heading ?? "").toString();
+    // Values are numeric/ISO; keep simple CSV with commas.
+    return `${ts},${deviceTs},${lat},${lon},${acc},${alt},${altAcc},${speed},${heading}`;
+  });
+  const csv = [header, ...rows].join("\r\n") + "\r\n";
+  downloadTextFile({
+    filename: `gps-log-${safeFileTimestamp()}.csv`,
+    content: csv,
+    mimeType: "text/csv",
+  });
+}
+
+function exportEventLogTxt() {
+  const headerLines = [
+    `Activity Log`,
+    `Generated: ${new Date().toISOString()}`,
+    `URL: ${window.location.href}`,
+    `User agent: ${navigator.userAgent}`,
+    "",
+  ];
+
+  // eventLog is newest-first; export oldest-first for readability.
+  const lines = eventLog.length ? eventLog.slice().reverse() : ["(no events)"];
+  const content = headerLines.concat(lines).join("\r\n") + "\r\n";
+
+  downloadTextFile({
+    filename: `activity-log-${safeFileTimestamp()}.txt`,
+    content,
+    mimeType: "text/plain",
+  });
+}
+
+function showRunSummary() {
+  const sum = document.getElementById("summary");
+  if (!sum) return;
+  sum.style.display = "block";
+  document.getElementById("sumElapsed").innerText = `Total elapsed time: ${formatElapsed(elapsedMs)}`;
+  document.getElementById("sumFocus").innerText = `Focus interruptions: ${focusInterruptions}`;
+  document.getElementById("sumGpsFailures").innerText = `GPS failures: ${gpsFailures}`;
+  document.getElementById("sumGpsFixes").innerText = `GPS fixes collected: ${gpsLog.length}`;
+}
+
+document.getElementById("wakeButton").onclick = async () => {
+  // Must be user gesture for audio + permissions.
+  ensureAudio();
+
+  // Pre-run GPS health check
+  const gpsOk = await gpsHealthCheck();
+  if (!gpsOk) return;
+
+  // Start session
+  clearWarning();
+  sessionActive = true;
+  keepAwakeEnabled = true;
+  lastTimerTickMs = Date.now();
+  logEvent("Session started");
+  const endBtn = document.getElementById("endButton");
+  if (endBtn) endBtn.disabled = false;
+
+  // Acquire wake lock (or iOS video fallback)
+  await enableWakeLock();
+  startTimer();
+  startGpsLogging();
+  setStatus("Session running");
+  updateWakeButtonState();
+};
+
+document.getElementById("endButton").onclick = async () => {
+  if (!sessionActive) return;
+  setStatus("Ending session…");
+  sessionActive = false;
+  keepAwakeEnabled = false;
+  logEvent("Session ended");
+
+  // Stop timers
+  if (gpsIntervalId) window.clearInterval(gpsIntervalId);
+  if (gpsStaleCheckId) window.clearInterval(gpsStaleCheckId);
+  if (timerIntervalId) window.clearInterval(timerIntervalId);
+  gpsIntervalId = 0;
+  gpsStaleCheckId = 0;
+  timerIntervalId = 0;
+
+  // Release wake lock if held
+  try {
+    if (wakeLock) {
+      await wakeLock.release();
+      wakeLock = null;
+    }
+  } catch {
+    // ignore
+  }
+
+  // iOS video can just stop playing when page is done; don't hard-fail.
+  try {
+    const vid = document.getElementById("iosVideo");
+    if (vid) {
+      vid.pause();
+      vid.currentTime = 0;
+    }
+  } catch {
+    // ignore
+  }
+
+  pauseTimer();
+  showRunSummary();
+  setStatus("Session ended");
+  updateWakeButtonState();
+  updateDiagnostics();
+};
+
+document.getElementById("exportCsvButton").onclick = exportGpsCsv;
+document.getElementById("exportLogButton").onclick = exportEventLogTxt;
+
+// If the tab becomes hidden, Chromium will usually release the lock.
+// Re-acquire it when returning to the tab (only if the user enabled it).
+document.addEventListener("visibilitychange", async () => {
+  // Focus monitor + audible alarms
+  if (document.visibilityState === "hidden") {
+    lastHiddenAt = Date.now();
+    if (sessionActive) {
+      focusInterruptions += 1;
+      playAlert();
+      showWarning("Page lost focus/visibility. Return to the page to continue the test.");
+      logEvent("Switched away (page hidden) — wake lock may stop until you return");
+      pauseTimer();
+    }
+    updateDiagnostics();
+    return;
+  }
+
+  // visible
+  lastShownAt = Date.now();
+  if (sessionActive) {
+    clearWarning();
+    resumeTimer();
+    logEvent("Returned (page visible)");
+  }
+
+  // If it was released while hidden, try to re-acquire.
+  if (keepAwakeEnabled && !isIOS && document.visibilityState === "visible") {
+    if (!wakeLock) {
+      logEvent("Attempting to re-acquire wake lock…");
+      await enableWakeLock();
+    }
+  }
+
+  updateDiagnostics();
+});
+
+// Initialize diagnostics ASAP
+updateDiagnostics();
+logEvent("Page loaded");
+
+// Best-effort Maps/app-switch detection.
+// Web pages cannot truly verify if another app (Google Maps) is currently running.
+// We can only infer that an app switch likely happened if the page is backgrounded
+// immediately after the user tapped "Start Navigation".
+window.addEventListener("blur", () => {
+  if (!lastNavTapAt) return;
+  const delta = Date.now() - lastNavTapAt;
+  if (delta >= 0 && delta <= 5000) {
+    mapsLaunchState = "Likely opened (page lost focus)";
+    mapsLaunchNote = "Cannot verify Maps is running; this only indicates an app/tab switch.";
+    updateDiagnostics();
+  }
+});
+
+window.addEventListener("pageshow", () => {
+  lastShownAt = Date.now();
+  updateDiagnostics();
+});
+
+// Initialize button state
+updateWakeButtonState();
+
+document.getElementById("navButton").onclick = () => {
+  // Important: Wake Lock is tied to THIS page/tab. If we navigate away in the same tab,
+  // the browser must release the wake lock.
+  setStatus("Opening navigation… (wake lock will release when leaving this page)");
+
+  lastNavTapAt = Date.now();
+  logEvent("Start Navigation tapped");
+  mapsLaunchState = "Launch requested";
+  mapsLaunchNote = "Waiting to see if the page backgrounds (best-effort signal).";
+  updateDiagnostics();
+
+  const destination = encodeURIComponent("Starbucks");
+  const webUrl = `https://www.google.com/maps/dir/?api=1&destination=${destination}&travelmode=driving&dir_action=navigate`;
+
+  // iOS: attempt to deep-link into the Google Maps app if installed.
+  // If it fails (not installed / blocked), fall back to the web URL.
+  if (isIOS) {
+    mapsLaunchState = "Launching (attempting Google Maps app)…";
+    mapsLaunchNote = "iOS will prompt if allowed; otherwise falls back to web.";
+    updateDiagnostics();
+
+    // Google Maps URL scheme docs: comgooglemaps://
+    // Use daddr for destination, directionsmode for driving.
+    const appUrl = `comgooglemaps://?daddr=${destination}&directionsmode=driving`;
+    const startVisibility = document.visibilityState;
+    const startTime = Date.now();
+    window.location.href = appUrl;
+
+    window.setTimeout(() => {
+      const stillVisible = document.visibilityState === startVisibility && document.visibilityState === "visible";
+      const elapsed = Date.now() - startTime;
+      if (stillVisible && elapsed >= 1200) {
+        mapsLaunchState = "Google Maps app not detected";
+        mapsLaunchNote = "Install Google Maps (or allow opening app links) to use Start Navigation.";
+        updateDiagnostics();
+        showWarning("Google Maps app was not opened. Install Google Maps (or allow opening app links), then try again.");
+        logEvent("Google Maps app not detected (no fallback to web)");
+        setStatus("Google Maps app not detected");
+      } else {
+        mapsLaunchState = "Likely opened";
+        mapsLaunchNote = "Cannot verify running state; only inferred from app/tab switch.";
+        updateDiagnostics();
+      }
+    }, 1500);
+    return;
+  }
+
+  // On Android this typically deep-links into the Google Maps app (recommended).
+  // If it doesn't, it will still open the Maps website.
+  if (isAndroid) {
+    mapsLaunchState = "Launching (attempting Maps app)…";
+    mapsLaunchNote = "If the page backgrounds, Maps likely opened.";
+    updateDiagnostics();
+
+    // Prefer a direct navigation intent first.
+    // If this fails (e.g., Maps not installed), we fall back to the web URL.
+    const intentUrl = `intent://maps.google.com/maps?daddr=${destination}&directionsmode=driving#Intent;scheme=https;package=com.google.android.apps.maps;end`;
+
+    const startVisibility = document.visibilityState;
+    const startTime = Date.now();
+    window.location.href = intentUrl;
+
+    // If we stay visible, assume the intent didn’t switch apps and fall back to web.
+    window.setTimeout(() => {
+      const stillVisible = document.visibilityState === startVisibility && document.visibilityState === "visible";
+      const elapsed = Date.now() - startTime;
+      if (stillVisible && elapsed >= 1200) {
+        mapsLaunchState = "Google Maps app not detected";
+        mapsLaunchNote = "Install Google Maps (or allow opening app links) to use Start Navigation.";
+        updateDiagnostics();
+        showWarning("Google Maps app was not opened. Install Google Maps (or allow opening app links), then try again.");
+        logEvent("Google Maps app not detected (no fallback to web)");
+        setStatus("Google Maps app not detected");
+      } else {
+        mapsLaunchState = "Likely opened";
+        mapsLaunchNote = "Cannot verify running state; only inferred from app/tab switch.";
+        updateDiagnostics();
+      }
+    }, 1500);
+    return;
+  }
+
+  // Non-Android fallback
+  mapsLaunchState = "Opening Maps web";
+  mapsLaunchNote = "Wake lock will only apply while this page is foreground.";
+  updateDiagnostics();
+  window.location.href = webUrl;
+};
+</script>
+
+</body>
+</html>
