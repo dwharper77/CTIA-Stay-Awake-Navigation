@@ -160,9 +160,9 @@ function setText(id, text) {
 
 function getWakeLockStateText() {
   if (!keepAwakeEnabled) return "Off";
-  if (wakeLock) return "On (held by this page)";
+  if (wakeLock) return "On";
   if (lastWakeLockError) return `Off (error: ${lastWakeLockError})`;
-  return "On (requested, not currently held)";
+  return "On (requested)";
 }
 
 function updateDiagnostics() {
@@ -173,10 +173,10 @@ function updateDiagnostics() {
   );
   setText("diagWakeState", `Wake lock: ${getWakeLockStateText()}`);
 
-  // Simple signal only: when the user tapped Start Navigation.
+  // Simple signal only: when the user pressed Start Navigation.
   setText(
     "diagMaps",
-    lastNavTapAt ? `Google Maps: Start Navigation tapped at ${formatTime(lastNavTapAt)}` : "Google Maps: Not started"
+    lastNavTapAt ? `Google Maps: Start Navigation started at ${formatTime(lastNavTapAt)}` : "Google Maps: Not started"
   );
 
   // Session info
@@ -390,8 +390,8 @@ async function gpsHealthCheck() {
 
     if (typeof fix.accuracy === "number" && fix.accuracy > GPS_MAX_ACCURACY_METERS) {
       playAlert();
-      showWarning(`GPS accuracy is low (${Math.round(fix.accuracy)}m). Move to open sky and retry.`);
-      throw new Error("GPS accuracy too low");
+      showWarning(`GPS accuracy is greater than 100m (${Math.round(fix.accuracy)}m).`);
+      throw new Error("GPS accuracy low");
     }
 
     clearWarning();
@@ -414,7 +414,7 @@ async function collectGpsFix() {
     if (typeof fix.accuracy === "number" && fix.accuracy > GPS_MAX_ACCURACY_METERS) {
       gpsFailures += 1;
       playAlert();
-      showWarning(`GPS accuracy too low (${Math.round(fix.accuracy)}m).`);
+      showWarning(`GPS accuracy is greater than 100m (${Math.round(fix.accuracy)}m).`);
       updateDiagnostics();
       return;
     }
