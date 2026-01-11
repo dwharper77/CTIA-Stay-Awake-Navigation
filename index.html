@@ -90,44 +90,103 @@ let lastWakeLockReleasedAt = 0;
 
 // Navigation hardening (best-effort; browsers limit how "sticky" a page can be).
 let navGuardArmed = false;
+let navGuardAllowExit = false;
+let navGuardCounter = 0;
+let navGuardBaseUrl = "";
 
 // Simple in-page notification log (helps confirm when things stopped/started).
 const EVENT_LOG_MAX = 40;
 let eventLog = [];
 
+function pushNavGuardEntry() {
+  if (!navGuardBaseUrl) navGuardBaseUrl = window.location.href.split("#")[0];
+  navGuardCounter += 1;
+  const url = `${navGuardBaseUrl}#session-${navGuardCounter}`;
+
+  // Using a changing hash makes the history entry distinct and more reliable on mobile.
+  try {
+    history.pushState({ navGuard: true, id: navGuardCounter }, "", url);
+  } catch {
+    try {
+      window.location.hash = `session-${navGuardCounter}`;
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function restoreNavGuardUrl() {
+  if (!navGuardBaseUrl || !navGuardCounter) return;
+  const url = `${navGuardBaseUrl}#session-${navGuardCounter}`;
+  try {
+    history.replaceState({ navGuard: true, id: navGuardCounter }, "", url);
+  } catch {
+    try {
+      window.location.hash = `session-${navGuardCounter}`;
+    } catch {
+      // ignore
+    }
+  }
+}
+
 function armNavigationGuard() {
   if (navGuardArmed) return;
   navGuardArmed = true;
+  navGuardAllowExit = false;
+  navGuardBaseUrl = window.location.href.split("#")[0];
+  pushNavGuardEntry();
+}
 
-  // Adds a history entry so the Back button triggers a popstate we can intercept.
+function disarmNavigationGuard() {
+  navGuardArmed = false;
+  navGuardAllowExit = false;
   try {
-    history.pushState({ navGuard: true }, "", window.location.href);
+    if (navGuardBaseUrl) history.replaceState(history.state, "", navGuardBaseUrl);
   } catch {
     // ignore
   }
 }
 
-function disarmNavigationGuard() {
-  navGuardArmed = false;
-}
-
 // Trigger a native "Leave site?" dialog on refresh/close while the session is active.
 window.addEventListener("beforeunload", (e) => {
-  if (!sessionActive) return;
+  if (!sessionActive || navGuardAllowExit) return;
   e.preventDefault();
   e.returnValue = "";
 });
 
 // Best-effort back-button trap while the session is active.
-window.addEventListener("popstate", () => {
-  if (!sessionActive) return;
-  const ok = window.confirm("Session is running. Leave this page and end tracking?");
+window.addEventListener("popstate", async () => {
+  if (!sessionActive || navGuardAllowExit) return;
+
+  const ok = window.confirm("Session is running. Leave this page?");
   if (!ok) {
-    try {
-      history.pushState({ navGuard: true }, "", window.location.href);
-    } catch {
-      // ignore
-    }
+    // User chose to stay: restore the guard so Back keeps prompting.
+    if (navGuardArmed) pushNavGuardEntry();
+    return;
+  }
+
+  // User chose to leave: end the session cleanly, then allow navigation.
+  try {
+    await endSession({ reason: "Left page via Back" });
+  } catch {
+    // ignore
+  }
+
+  navGuardAllowExit = true;
+  disarmNavigationGuard();
+  try {
+    history.back();
+  } catch {
+    // ignore
+  }
+});
+
+// Some environments navigate via hash changes instead of popstate.
+window.addEventListener("hashchange", () => {
+  if (!sessionActive || navGuardAllowExit) return;
+  // If something changed the hash away from our guard hash, put it back without adding history.
+  if (navGuardArmed && !String(window.location.hash || "").startsWith("#session-")) {
+    restoreNavGuardUrl();
   }
 });
 
@@ -568,39 +627,15 @@ function showRunSummary() {
   document.getElementById("sumGpsFixes").innerText = `GPS fixes collected: ${gpsLog.length}`;
 }
 
-document.getElementById("wakeButton").onclick = async () => {
-  // Must be user gesture for audio + permissions.
-  ensureAudio();
+let endingSession = false;
+async function endSession({ reason = "Session ended" } = {}) {
+  if (!sessionActive || endingSession) return;
+  endingSession = true;
 
-  // Pre-run GPS health check
-  const gpsOk = await gpsHealthCheck();
-  if (!gpsOk) return;
-
-  // Start session
-  clearWarning();
-  sessionActive = true;
-  armNavigationGuard();
-  keepAwakeEnabled = true;
-  lastTimerTickMs = Date.now();
-  logEvent("Session started");
-  const endBtn = document.getElementById("endButton");
-  if (endBtn) endBtn.disabled = false;
-
-  // Acquire wake lock (or iOS video fallback)
-  await enableWakeLock();
-  startTimer();
-  startGpsLogging();
-  setStatus("Session running");
-  updateWakeButtonState();
-};
-
-document.getElementById("endButton").onclick = async () => {
-  if (!sessionActive) return;
   setStatus("Ending session…");
   sessionActive = false;
-  disarmNavigationGuard();
   keepAwakeEnabled = false;
-  logEvent("Session ended");
+  logEvent(reason);
 
   // Stop timers
   if (gpsIntervalId) window.clearInterval(gpsIntervalId);
@@ -636,6 +671,39 @@ document.getElementById("endButton").onclick = async () => {
   setStatus("Session ended");
   updateWakeButtonState();
   updateDiagnostics();
+  endingSession = false;
+}
+
+document.getElementById("wakeButton").onclick = async () => {
+  // Must be user gesture for audio + permissions.
+  ensureAudio();
+
+  // Pre-run GPS health check
+  const gpsOk = await gpsHealthCheck();
+  if (!gpsOk) return;
+
+  // Start session
+  clearWarning();
+  sessionActive = true;
+  armNavigationGuard();
+  keepAwakeEnabled = true;
+  lastTimerTickMs = Date.now();
+  logEvent("Session started");
+  const endBtn = document.getElementById("endButton");
+  if (endBtn) endBtn.disabled = false;
+
+  // Acquire wake lock (or iOS video fallback)
+  await enableWakeLock();
+  startTimer();
+  startGpsLogging();
+  setStatus("Session running");
+  updateWakeButtonState();
+};
+
+document.getElementById("endButton").onclick = async () => {
+  if (!sessionActive) return;
+  disarmNavigationGuard();
+  await endSession({ reason: "Session ended" });
 };
 
 document.getElementById("exportCsvButton").onclick = exportGpsCsv;
