@@ -35,6 +35,16 @@
 
 <div id="warningBanner" style="display:none; margin:16px auto 0; max-width:520px; background:#fff3cd; color:#664d03; padding:12px; border-radius:8px; text-align:left;"></div>
 
+<div id="resumeBanner" style="display:none; margin:16px auto 0; max-width:520px; background:#e7f1ff; color:#084298; padding:12px; border-radius:8px; text-align:left;">
+  <div style="font-weight:bold; margin-bottom:6px;">Previous run detected</div>
+  <div id="resumeBannerText" style="font-size:14px; line-height:1.3;"></div>
+  <div style="display:flex; gap:8px; margin-top:10px;">
+    <button id="resumeRunButton" style="flex:1; background:#0d6efd;">Resume Run</button>
+    <button id="resumeExportButton" style="flex:1; background:#198754;">Export + Clear</button>
+    <button id="resumeClearButton" style="flex:1; background:#6c757d;">Clear</button>
+  </div>
+</div>
+
 <button id="wakeButton">Enable Stay Awake (Start Session)</button>
 <button id="endButton" disabled style="background:#6c757d;">End Session</button>
 
@@ -97,6 +107,8 @@ let navGuardBaseUrl = "";
 // Simple in-page notification log (helps confirm when things stopped/started).
 const EVENT_LOG_MAX = 40;
 let eventLog = [];
+let eventStore = null;
+let suspendEventPersist = false;
 
 function pushNavGuardEntry() {
   if (!navGuardBaseUrl) navGuardBaseUrl = window.location.href.split("#")[0];
@@ -192,10 +204,33 @@ window.addEventListener("hashchange", () => {
 
 function logEvent(message) {
   const ts = formatTime(Date.now());
-  eventLog.unshift(`[${ts}] ${message}`);
+  const entry = `[${ts}] ${message}`;
+  eventLog.unshift(entry);
   if (eventLog.length > EVENT_LOG_MAX) eventLog = eventLog.slice(0, EVENT_LOG_MAX);
   const el = document.getElementById("eventLog");
   if (el) el.innerText = eventLog.join("\n");
+
+  // Persist event log (best-effort)
+  if (suspendEventPersist) return;
+  try {
+    const existing = (eventStore && eventStore.loadLog)
+      ? eventStore.loadLog()
+      : (() => {
+          try {
+            const raw = window.localStorage.getItem("eventLog");
+            const parsed = raw ? JSON.parse(raw) : [];
+            return Array.isArray(parsed) ? parsed : [];
+          } catch {
+            return [];
+          }
+        })();
+
+    const merged = [entry, ...existing].slice(0, EVENT_LOG_MAX);
+    if (eventStore && eventStore.persistLog) eventStore.persistLog(merged);
+    else window.localStorage.setItem("eventLog", JSON.stringify(merged));
+  } catch {
+    // ignore
+  }
 }
 
 // Session + logging
@@ -215,6 +250,157 @@ let sessionStartMs = 0;
 let elapsedMs = 0;
 let lastTimerTickMs = 0;
 let lastStaleAlertAt = 0;
+
+// Persistent GPS storage (survives reloads/crashes/tab kills via localStorage)
+let gpsStore = null;
+let hasPreviousRun = false;
+
+async function initGpsStore() {
+  try {
+    gpsStore = await import("./gpsLogger.js");
+    eventStore = await import("./eventLogger.js");
+
+    const storedGpsCount = gpsStore.loadRun().length;
+    const storedEventCount = eventStore.loadLog().length;
+    const hasGps = storedGpsCount > 0;
+    const hasEvents = storedEventCount > 0;
+
+    hasPreviousRun = hasGps || hasEvents;
+    window.hasPreviousRun = hasPreviousRun;
+
+    // Show a Resume banner (data remains in storage until the user chooses to resume)
+    if (hasPreviousRun) {
+      const banner = document.getElementById("resumeBanner");
+      const text = document.getElementById("resumeBannerText");
+      if (text) {
+        text.innerText = `Found ${hasGps ? storedGpsCount : 0} GPS fixes and ${hasEvents ? storedEventCount : 0} log events saved on this device.`;
+      }
+      if (banner) banner.style.display = "block";
+
+      const resumeBtn = document.getElementById("resumeRunButton");
+      const exportBtn = document.getElementById("resumeExportButton");
+      const clearBtn = document.getElementById("resumeClearButton");
+
+      if (resumeBtn) {
+        resumeBtn.onclick = () => {
+          // Load previous data into memory + UI only when the user explicitly resumes.
+          try {
+            gpsLog = gpsStore.loadRun();
+          } catch {
+            gpsLog = [];
+          }
+
+          try {
+            eventLog = eventStore.loadLog().slice(0, EVENT_LOG_MAX);
+          } catch {
+            eventLog = [];
+          }
+
+          const el = document.getElementById("eventLog");
+          if (el) el.innerText = eventLog.length ? eventLog.join("\n") : "(no events yet)";
+
+          if (banner) banner.style.display = "none";
+          clearWarning();
+          setStatus("Resumed previous run (GPS + log loaded)");
+          updateDiagnostics();
+          logEvent("Resumed previous run");
+        };
+      }
+
+      if (exportBtn) {
+        exportBtn.onclick = async () => {
+          // Export GPS (CSV) + Event Log (TXT), then clear both.
+          if (window.exportRun) await window.exportRun();
+          // Export the stored event log even if we didn't load it into the UI.
+          try {
+            eventLog = eventStore.loadLog().slice(0, EVENT_LOG_MAX);
+          } catch {
+            // ignore
+          }
+          exportEventLogTxt();
+          try {
+            if (eventStore && eventStore.clearLog) eventStore.clearLog();
+          } catch {
+            // ignore
+          }
+          eventLog = [];
+          const el2 = document.getElementById("eventLog");
+          if (el2) el2.innerText = "(no events yet)";
+          if (banner) banner.style.display = "none";
+          hasPreviousRun = false;
+          window.hasPreviousRun = false;
+          updateDiagnostics();
+        };
+      }
+
+      if (clearBtn) {
+        clearBtn.onclick = () => {
+          if (window.clearRun) window.clearRun();
+          try {
+            if (eventStore && eventStore.clearLog) eventStore.clearLog();
+          } catch {
+            // ignore
+          }
+          eventLog = [];
+          const el2 = document.getElementById("eventLog");
+          if (el2) el2.innerText = "(no events yet)";
+          if (banner) banner.style.display = "none";
+          hasPreviousRun = false;
+          window.hasPreviousRun = false;
+          updateDiagnostics();
+        };
+      }
+
+      // Don't auto-log a "restored" event here; it would mutate the stored log.
+    }
+
+    // Expose helpers for UI/buttons/console.
+    window.exportRun = async () => {
+      const ok = gpsStore.exportRun();
+      if (ok) {
+        gpsLog = [];
+        hasPreviousRun = false;
+        window.hasPreviousRun = false;
+        logEvent("Exported stored GPS log and cleared localStorage");
+        clearWarning();
+        updateDiagnostics();
+      }
+      return ok;
+    };
+
+    window.clearRun = () => {
+      gpsStore.clearRun();
+      gpsLog = [];
+      // Clear the saved event log too (treat as one "run")
+      try {
+        if (eventStore && eventStore.clearLog) eventStore.clearLog();
+      } catch {
+        // ignore
+      }
+      eventLog = [];
+      const el = document.getElementById("eventLog");
+      if (el) el.innerText = "(no events yet)";
+
+      hasPreviousRun = false;
+      window.hasPreviousRun = false;
+      // Avoid writing a new persisted log entry after clearing.
+      suspendEventPersist = true;
+      try {
+        logEvent("Cleared stored run data (debug)");
+      } finally {
+        suspendEventPersist = false;
+      }
+      clearWarning();
+      updateDiagnostics();
+    };
+  } catch (e) {
+    gpsStore = null;
+    eventStore = null;
+    hasPreviousRun = false;
+    window.hasPreviousRun = false;
+    logEvent("GPS persistence unavailable (gpsLogger.js failed to load)");
+  }
+}
 
 // Audio
 let audioCtx = null;
@@ -520,6 +706,13 @@ async function collectGpsFix() {
       return;
     }
 
+    // Persist each fix immediately (survives reload/crash/tab kill).
+    try {
+      if (gpsStore && gpsStore.saveFix) gpsStore.saveFix(fix);
+    } catch {
+      // ignore storage errors; keep in-memory logging running
+    }
+
     gpsLog.push(fix);
     lastGpsFixAt = Date.now();
     clearWarning();
@@ -606,8 +799,19 @@ function exportEventLogTxt() {
     "",
   ];
 
-  // eventLog is newest-first; export oldest-first for readability.
-  const lines = eventLog.length ? eventLog.slice().reverse() : ["(no events)"];
+  // Prefer persisted log (if available) so exports survive reloads/crashes.
+  let source = eventLog;
+  try {
+    if (eventStore && eventStore.loadLog) {
+      const stored = eventStore.loadLog();
+      if (Array.isArray(stored) && stored.length) source = stored;
+    }
+  } catch {
+    // ignore
+  }
+
+  // Log is newest-first; export oldest-first for readability.
+  const lines = source.length ? source.slice().reverse() : ["(no events)"];
   const content = headerLines.concat(lines).join("\r\n") + "\r\n";
 
   downloadTextFile({
@@ -706,7 +910,14 @@ document.getElementById("endButton").onclick = async () => {
   await endSession({ reason: "Session ended" });
 };
 
-document.getElementById("exportCsvButton").onclick = exportGpsCsv;
+document.getElementById("exportCsvButton").onclick = async () => {
+  if (window.exportRun) {
+    await window.exportRun();
+    return;
+  }
+  // Fallback: export in-memory log if persistence isn't available.
+  exportGpsCsv();
+};
 document.getElementById("exportLogButton").onclick = exportEventLogTxt;
 
 // If the tab becomes hidden, Chromium will usually release the lock.
@@ -748,6 +959,7 @@ document.addEventListener("visibilitychange", async () => {
 // Initialize diagnostics ASAP
 updateDiagnostics();
 logEvent("Page loaded");
+initGpsStore();
 
 // Best-effort Maps/app-switch detection.
 // Web pages cannot truly verify if another app (Google Maps) is currently running.
