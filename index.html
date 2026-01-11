@@ -1,82 +1,301 @@
 <!DOCTYPE html>
 <html>
 <head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Stay Awake Navigation</title>
 <style>
+  :root {
+    --bg: #f6f7fb;
+    --card: #ffffff;
+    --text: #0f172a;
+    --muted: #475569;
+    --border: rgba(2, 6, 23, 0.10);
+    --shadow: 0 10px 28px rgba(15, 23, 42, 0.08);
+
+    --primary: #2563eb;
+    --primary-hover: #1d4ed8;
+    --success: #16a34a;
+    --success-hover: #15803d;
+    --neutral: #64748b;
+    --neutral-hover: #475569;
+    --danger: #dc2626;
+    --danger-hover: #b91c1c;
+
+    --warn-bg: #fff7ed;
+    --warn-text: #9a3412;
+    --info-bg: #eff6ff;
+    --info-text: #1d4ed8;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1220;
+      --card: #0f172a;
+      --text: #e5e7eb;
+      --muted: #94a3b8;
+      --border: rgba(226, 232, 240, 0.12);
+      --shadow: 0 12px 30px rgba(0, 0, 0, 0.35);
+      --warn-bg: rgba(234, 88, 12, 0.14);
+      --warn-text: #fdba74;
+      --info-bg: rgba(37, 99, 235, 0.14);
+      --info-text: #93c5fd;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
   body {
-    font-family: Arial, sans-serif;
-    padding: 20px;
-    background: #f5f5f5;
-    text-align: center;
+    margin: 0;
+    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    background: radial-gradient(1200px 600px at 20% -10%, rgba(37, 99, 235, 0.10), transparent 50%),
+                radial-gradient(900px 500px at 100% 0%, rgba(22, 163, 74, 0.08), transparent 55%),
+                var(--bg);
+    color: var(--text);
   }
-  button {
-    padding: 15px 25px;
-    font-size: 18px;
-    margin: 15px 0;
-    border: none;
-    border-radius: 8px;
-    background: #007bff;
-    color: white;
+
+  .app {
+    max-width: 620px;
+    margin: 0 auto;
+    padding: 22px 16px 32px;
   }
-  #status {
-    margin-top: 20px;
-    font-size: 18px;
-    font-weight: bold;
+
+  .header {
+    text-align: left;
+    margin-bottom: 14px;
+  }
+
+  .headerRow {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .header h1 {
+    margin: 0;
+    font-size: 22px;
+    letter-spacing: -0.01em;
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: rgba(148, 163, 184, 0.12);
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 0.02em;
+    user-select: none;
+    white-space: nowrap;
+  }
+
+  .pillDot {
+    width: 8px;
+    height: 8px;
+    border-radius: 999px;
+    background: var(--neutral);
+  }
+
+  .pill.is-running { background: rgba(22, 163, 74, 0.12); }
+  .pill.is-running .pillDot { background: var(--success); }
+
+  .pill.is-idle { background: rgba(148, 163, 184, 0.12); }
+  .pill.is-idle .pillDot { background: var(--neutral); }
+
+  .header p {
+    margin: 8px 0 0;
+    color: var(--muted);
+    line-height: 1.35;
+  }
+
+  .actions {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 10px;
+    margin-top: 14px;
+  }
+
+  .actions.two {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  @media (max-width: 420px) {
+    .actions.two { grid-template-columns: 1fr; }
+  }
+
+  .btn {
+    appearance: none;
+    border: 1px solid transparent;
+    border-radius: 12px;
+    padding: 12px 14px;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    cursor: pointer;
+    width: 100%;
+    transition: transform 0.06s ease, background 0.15s ease, border-color 0.15s ease, opacity 0.15s ease;
+  }
+
+  .btn:active { transform: translateY(1px); }
+  .btn:disabled { opacity: 0.55; cursor: not-allowed; }
+
+  .btn-primary { background: var(--primary); color: #fff; }
+  .btn-primary:hover { background: var(--primary-hover); }
+  .btn-success { background: var(--success); color: #fff; }
+  .btn-success:hover { background: var(--success-hover); }
+  .btn-neutral { background: var(--neutral); color: #fff; }
+  .btn-neutral:hover { background: var(--neutral-hover); }
+  .btn-danger { background: var(--danger); color: #fff; }
+  .btn-danger:hover { background: var(--danger-hover); }
+
+  .banner {
+    display: none;
+    margin-top: 14px;
+    border-radius: 12px;
+    padding: 12px;
+    border: 1px solid var(--border);
+  }
+
+  .banner-warn { background: var(--warn-bg); color: var(--warn-text); }
+  .banner-info { background: var(--info-bg); color: var(--info-text); }
+
+  .card {
+    margin-top: 14px;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 14px;
+    box-shadow: var(--shadow);
+    text-align: left;
+  }
+
+  .card h2 {
+    margin: 0;
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+
+  .status {
+    margin-top: 12px;
+    padding: 12px 14px;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: rgba(148, 163, 184, 0.12);
+    color: var(--text);
+    font-weight: 700;
+    text-align: left;
+  }
+
+  .kv {
+    margin-top: 10px;
+    color: var(--muted);
+    line-height: 1.3;
+  }
+
+  .log {
+    margin-top: 8px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+    font-size: 12px;
+    color: var(--text);
+    background: rgba(148, 163, 184, 0.10);
+    border: 1px solid var(--border);
+    padding: 10px;
+    border-radius: 10px;
+    max-height: 220px;
+    overflow: auto;
+  }
+
+  .subactions {
+    display: flex;
+    gap: 10px;
+    margin-top: 10px;
+  }
+
+  .subactions .btn {
+    font-size: 14px;
+    padding: 10px 12px;
+  }
+
+  @media (max-width: 520px) {
+    .subactions { flex-direction: column; }
   }
 </style>
 </head>
 <body>
 
-<h2>Stay Awake Navigation</h2>
-<p>Workflow: tap <strong>Start Navigation</strong> to open Google Maps, return here, then tap <strong>Enable Stay Awake</strong> to start the session.</p>
+<main class="app">
+  <header class="header">
+    <div class="headerRow">
+      <h1>Stay Awake Navigation</h1>
+      <div id="statusPill" class="pill is-idle" aria-live="polite">
+        <span class="pillDot" aria-hidden="true"></span>
+        <span id="statusPillText">Idle</span>
+      </div>
+    </div>
+    <p>Tap <strong>Start Navigation</strong> to open Google Maps, return here, then tap <strong>Enable Stay Awake</strong> to start the session.</p>
+  </header>
 
-<button id="navButton">Start Navigation</button>
-
-<div id="warningBanner" style="display:none; margin:16px auto 0; max-width:520px; background:#fff3cd; color:#664d03; padding:12px; border-radius:8px; text-align:left;"></div>
-
-<div id="resumeBanner" style="display:none; margin:16px auto 0; max-width:520px; background:#e7f1ff; color:#084298; padding:12px; border-radius:8px; text-align:left;">
-  <div style="font-weight:bold; margin-bottom:6px;">Previous run detected</div>
-  <div id="resumeBannerText" style="font-size:14px; line-height:1.3;"></div>
-  <div style="display:flex; gap:8px; margin-top:10px;">
-    <button id="resumeRunButton" style="flex:1; background:#0d6efd;">Resume Run</button>
-    <button id="resumeExportButton" style="flex:1; background:#198754;">Export + Clear</button>
-    <button id="resumeClearButton" style="flex:1; background:#6c757d;">Clear</button>
+  <div class="actions">
+    <button id="navButton" class="btn btn-primary">Start Navigation</button>
   </div>
-</div>
 
-<button id="wakeButton">Enable Stay Awake (Start Session)</button>
-<button id="endButton" disabled style="background:#6c757d;">End Session</button>
+  <div id="warningBanner" class="banner banner-warn"></div>
 
-<div id="status">Status: Idle</div>
+  <div id="resumeBanner" class="banner banner-info">
+    <div style="font-weight:800; margin-bottom:6px;">Previous run detected</div>
+    <div id="resumeBannerText" style="font-size:14px; line-height:1.35;"></div>
+    <div class="subactions">
+      <button id="resumeRunButton" class="btn btn-primary">Resume Run</button>
+      <button id="resumeExportButton" class="btn btn-success">Export + Clear</button>
+      <button id="resumeClearButton" class="btn btn-neutral">Clear</button>
+    </div>
+  </div>
 
-<div id="session" style="margin-top:16px; font-size:14px; text-align:left; max-width:520px; margin-left:auto; margin-right:auto; background:#fff; padding:12px; border-radius:8px;">
-  <div><strong>Session</strong></div>
-  <div id="elapsed" style="margin-top:8px;">Elapsed: 00:00:00</div>
-  <div id="gpsStatus" style="margin-top:6px;">GPS: Not started</div>
-  <div id="focusStatus" style="margin-top:6px;">Focus interruptions: 0</div>
-  <div style="margin-top:10px; font-weight:bold;">Event log</div>
-  <div id="eventLog" style="margin-top:6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; font-size:12px; color:#333; background:#f8f9fa; padding:8px; border-radius:6px; max-height:180px; overflow:auto;">(no events yet)</div>
-</div>
+  <div class="actions two">
+    <button id="wakeButton" class="btn btn-primary">Enable Stay Awake (Start Session)</button>
+    <button id="endButton" class="btn btn-neutral" disabled>End Session</button>
+  </div>
 
-<div id="summary" style="display:none; margin-top:16px; font-size:14px; text-align:left; max-width:520px; margin-left:auto; margin-right:auto; background:#fff; padding:12px; border-radius:8px;">
-  <div><strong>Run Summary</strong></div>
-  <div id="sumElapsed" style="margin-top:8px;"></div>
-  <div id="sumFocus"></div>
-  <div id="sumGpsFailures"></div>
-  <div id="sumGpsFixes"></div>
-  <button id="exportCsvButton" style="margin-top:10px; width:100%;">Export GPS Log (.csv)</button>
-  <button id="exportLogButton" style="margin-top:10px; width:100%; background:#198754;">Export Event Log (.txt)</button>
-</div>
+  <div id="status" class="status">Status: Idle</div>
 
-<div id="details" style="margin-top:16px; font-size:14px; text-align:left; max-width:520px; margin-left:auto; margin-right:auto; background:#fff; padding:12px; border-radius:8px;">
-  <div><strong>Diagnostics</strong></div>
-  <div id="diagUrl"></div>
-  <div id="diagWakeSupport"></div>
-  <div id="diagWakeState"></div>
-  <div id="diagMaps"></div>
-  <div id="diagStorage"></div>
-</div>
+  <section id="session" class="card">
+    <h2>Session</h2>
+    <div id="elapsed" class="kv">Elapsed: 00:00:00</div>
+    <div id="gpsStatus" class="kv">GPS: Not started</div>
+    <div id="focusStatus" class="kv">Focus interruptions: 0</div>
+    <div style="margin-top:12px; font-weight:800; color: var(--muted);">Event log</div>
+    <div id="eventLog" class="log">(no events yet)</div>
+  </section>
+
+  <section id="summary" class="card" style="display:none;">
+    <h2>Run Summary</h2>
+    <div id="sumElapsed" class="kv"></div>
+    <div id="sumFocus" class="kv"></div>
+    <div id="sumGpsFailures" class="kv"></div>
+    <div id="sumGpsFixes" class="kv"></div>
+    <div class="actions" style="margin-top:12px;">
+      <button id="exportCsvButton" class="btn btn-primary">Export GPS Log (.csv)</button>
+      <button id="exportLogButton" class="btn btn-success">Export Event Log (.txt)</button>
+    </div>
+  </section>
+
+  <section id="details" class="card">
+    <h2>Diagnostics</h2>
+    <div id="diagUrl" class="kv"></div>
+    <div id="diagWakeSupport" class="kv"></div>
+    <div id="diagWakeState" class="kv"></div>
+    <div id="diagMaps" class="kv"></div>
+    <div id="diagStorage" class="kv"></div>
+  </section>
+</main>
 
 <!-- iOS silent video trick -->
 <video id="iosVideo" autoplay muted loop playsinline style="display:none">
@@ -460,7 +679,19 @@ function formatElapsed(ms) {
 
 function setStatus(text) {
   document.getElementById("status").innerText = `Status: ${text}`;
+  updateStatusPill();
   updateDiagnostics();
+}
+
+function updateStatusPill() {
+  const pill = document.getElementById("statusPill");
+  const label = document.getElementById("statusPillText");
+  if (!pill || !label) return;
+
+  const isRunning = !!sessionActive;
+  pill.classList.toggle("is-running", isRunning);
+  pill.classList.toggle("is-idle", !isRunning);
+  label.innerText = isRunning ? "Running" : "Idle";
 }
 
 function showWarning(message) {
@@ -1026,6 +1257,7 @@ document.addEventListener("visibilitychange", async () => {
 
 // Initialize diagnostics ASAP
 updateDiagnostics();
+updateStatusPill();
 logEvent("Page loaded");
 initGpsStore();
 
