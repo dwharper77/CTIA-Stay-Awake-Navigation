@@ -255,6 +255,106 @@ let lastStaleAlertAt = 0;
 let gpsStore = null;
 let hasPreviousRun = false;
 
+function _loadStoredArray(key) {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function _hideResumeBanner() {
+  const banner = document.getElementById("resumeBanner");
+  if (banner) banner.style.display = "none";
+}
+
+function _showResumeBanner({ gpsCount, eventCount }) {
+  const banner = document.getElementById("resumeBanner");
+  const text = document.getElementById("resumeBannerText");
+  if (text) text.innerText = `Found ${gpsCount} GPS fixes and ${eventCount} log events saved on this device.`;
+  if (banner) banner.style.display = "block";
+
+  const resumeBtn = document.getElementById("resumeRunButton");
+  const exportBtn = document.getElementById("resumeExportButton");
+  const clearBtn = document.getElementById("resumeClearButton");
+
+  if (resumeBtn) {
+    resumeBtn.onclick = () => {
+      // Nothing special is required to keep storing. This is just an explicit acknowledgement.
+      _hideResumeBanner();
+      clearWarning();
+      setStatus("Resumed previous run (continuing)");
+      updateDiagnostics();
+      logEvent("Resumed previous run");
+    };
+  }
+
+  if (exportBtn) {
+    exportBtn.onclick = async () => {
+      // Export GPS from storage if available
+      if (window.exportRun) {
+        await window.exportRun();
+      } else {
+        // Fallback: load stored GPS into memory for exportGpsCsv()
+        gpsLog = _loadStoredArray("gpsLog");
+        exportGpsCsv();
+        try {
+          window.localStorage.removeItem("gpsLog");
+        } catch {
+          // ignore
+        }
+        gpsLog = [];
+      }
+
+      // Export Event Log from storage if available
+      const storedEvents = (eventStore && eventStore.loadLog) ? eventStore.loadLog() : _loadStoredArray("eventLog");
+      eventLog = Array.isArray(storedEvents) ? storedEvents.slice(0, EVENT_LOG_MAX) : [];
+      exportEventLogTxt();
+      try {
+        if (eventStore && eventStore.clearLog) eventStore.clearLog();
+        else window.localStorage.removeItem("eventLog");
+      } catch {
+        // ignore
+      }
+      eventLog = [];
+      const el = document.getElementById("eventLog");
+      if (el) el.innerText = "(no events yet)";
+
+      hasPreviousRun = false;
+      window.hasPreviousRun = false;
+      _hideResumeBanner();
+      updateDiagnostics();
+    };
+  }
+
+  if (clearBtn) {
+    clearBtn.onclick = () => {
+      if (window.clearRun) {
+        window.clearRun();
+      } else {
+        try {
+          window.localStorage.removeItem("gpsLog");
+          window.localStorage.removeItem("eventLog");
+        } catch {
+          // ignore
+        }
+        gpsLog = [];
+        eventLog = [];
+        const el = document.getElementById("eventLog");
+        if (el) el.innerText = "(no events yet)";
+      }
+
+      hasPreviousRun = false;
+      window.hasPreviousRun = false;
+      _hideResumeBanner();
+      updateDiagnostics();
+    };
+  }
+}
+
 async function initGpsStore() {
   try {
     gpsStore = await import("./gpsLogger.js");
@@ -268,90 +368,8 @@ async function initGpsStore() {
     hasPreviousRun = hasGps || hasEvents;
     window.hasPreviousRun = hasPreviousRun;
 
-    // Show a Resume banner (data remains in storage until the user chooses to resume)
     if (hasPreviousRun) {
-      const banner = document.getElementById("resumeBanner");
-      const text = document.getElementById("resumeBannerText");
-      if (text) {
-        text.innerText = `Found ${hasGps ? storedGpsCount : 0} GPS fixes and ${hasEvents ? storedEventCount : 0} log events saved on this device.`;
-      }
-      if (banner) banner.style.display = "block";
-
-      const resumeBtn = document.getElementById("resumeRunButton");
-      const exportBtn = document.getElementById("resumeExportButton");
-      const clearBtn = document.getElementById("resumeClearButton");
-
-      if (resumeBtn) {
-        resumeBtn.onclick = () => {
-          // Load previous data into memory + UI only when the user explicitly resumes.
-          try {
-            gpsLog = gpsStore.loadRun();
-          } catch {
-            gpsLog = [];
-          }
-
-          try {
-            eventLog = eventStore.loadLog().slice(0, EVENT_LOG_MAX);
-          } catch {
-            eventLog = [];
-          }
-
-          const el = document.getElementById("eventLog");
-          if (el) el.innerText = eventLog.length ? eventLog.join("\n") : "(no events yet)";
-
-          if (banner) banner.style.display = "none";
-          clearWarning();
-          setStatus("Resumed previous run (GPS + log loaded)");
-          updateDiagnostics();
-          logEvent("Resumed previous run");
-        };
-      }
-
-      if (exportBtn) {
-        exportBtn.onclick = async () => {
-          // Export GPS (CSV) + Event Log (TXT), then clear both.
-          if (window.exportRun) await window.exportRun();
-          // Export the stored event log even if we didn't load it into the UI.
-          try {
-            eventLog = eventStore.loadLog().slice(0, EVENT_LOG_MAX);
-          } catch {
-            // ignore
-          }
-          exportEventLogTxt();
-          try {
-            if (eventStore && eventStore.clearLog) eventStore.clearLog();
-          } catch {
-            // ignore
-          }
-          eventLog = [];
-          const el2 = document.getElementById("eventLog");
-          if (el2) el2.innerText = "(no events yet)";
-          if (banner) banner.style.display = "none";
-          hasPreviousRun = false;
-          window.hasPreviousRun = false;
-          updateDiagnostics();
-        };
-      }
-
-      if (clearBtn) {
-        clearBtn.onclick = () => {
-          if (window.clearRun) window.clearRun();
-          try {
-            if (eventStore && eventStore.clearLog) eventStore.clearLog();
-          } catch {
-            // ignore
-          }
-          eventLog = [];
-          const el2 = document.getElementById("eventLog");
-          if (el2) el2.innerText = "(no events yet)";
-          if (banner) banner.style.display = "none";
-          hasPreviousRun = false;
-          window.hasPreviousRun = false;
-          updateDiagnostics();
-        };
-      }
-
-      // Don't auto-log a "restored" event here; it would mutate the stored log.
+      _showResumeBanner({ gpsCount: storedGpsCount, eventCount: storedEventCount });
     }
 
     // Expose helpers for UI/buttons/console.
@@ -396,9 +414,15 @@ async function initGpsStore() {
   } catch (e) {
     gpsStore = null;
     eventStore = null;
-    hasPreviousRun = false;
-    window.hasPreviousRun = false;
-    logEvent("GPS persistence unavailable (gpsLogger.js failed to load)");
+    // Fallback: still detect stored data and show resume controls.
+    const storedGpsCount = _loadStoredArray("gpsLog").length;
+    const storedEventCount = _loadStoredArray("eventLog").length;
+    hasPreviousRun = storedGpsCount > 0 || storedEventCount > 0;
+    window.hasPreviousRun = hasPreviousRun;
+    if (hasPreviousRun) {
+      _showResumeBanner({ gpsCount: storedGpsCount, eventCount: storedEventCount });
+    }
+    logEvent("Run persistence modules failed to load; using localStorage fallback");
   }
 }
 
