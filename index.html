@@ -520,6 +520,8 @@ function disarmNavigationGuard() {
 // Trigger a native "Leave site?" dialog on refresh/close while the session is active.
 window.addEventListener("beforeunload", (e) => {
   if (!sessionActive || navGuardAllowExit) return;
+  audibleAlert("leave");
+  try { logEvent("Attempted to leave (beforeunload)"); } catch { /* ignore */ }
   e.preventDefault();
   e.returnValue = "";
 });
@@ -527,6 +529,8 @@ window.addEventListener("beforeunload", (e) => {
 // Best-effort back-button trap while the session is active.
 window.addEventListener("popstate", async () => {
   if (!sessionActive || navGuardAllowExit) return;
+
+  audibleAlert("leave");
 
   const ok = window.confirm("Session is running. Leave this page?");
   if (!ok) {
@@ -537,6 +541,7 @@ window.addEventListener("popstate", async () => {
 
   // User chose to leave: end the session cleanly, then allow navigation.
   try {
+    audibleAlert("stop");
     await endSession({ reason: "Left page via Back" });
   } catch {
     // ignore
@@ -1030,6 +1035,8 @@ async function enableWakeLock() {
     const message = err && err.message ? err.message : "Wake lock request failed";
     lastWakeLockError = `${name}: ${message}`;
     logEvent(`Wake lock request failed: ${lastWakeLockError}`);
+    audibleAlert("warn");
+    showWarning(`Wake lock request failed: ${message}. Keep the screen on manually or try installing/opening in Chrome.`);
     setStatus(`${name}: ${message}`);
   }
 }
@@ -1071,6 +1078,22 @@ function playAlert() {
     osc.stop(now + 0.22);
   } catch {
     // ignore
+  }
+}
+
+let lastAudibleAt = 0;
+function audibleAlert(kind = "warn") {
+  // kind: warn (1), leave (2), stop (3)
+  // Uses short spaced beeps. Best-effort only; audio may still be blocked by the OS.
+  const nowMs = Date.now();
+  if (nowMs - lastAudibleAt < 900) return;
+  lastAudibleAt = nowMs;
+
+  const count = kind === "stop" ? 3 : (kind === "leave" ? 2 : 1);
+  for (let i = 0; i < count; i++) {
+    window.setTimeout(() => {
+      try { playAlert(); } catch { /* ignore */ }
+    }, i * 260);
   }
 }
 
@@ -1317,6 +1340,8 @@ async function endSession({ reason = "Session ended" } = {}) {
   if (!sessionActive || endingSession) return;
   endingSession = true;
 
+  audibleAlert("stop");
+
   setStatus("Ending session…");
   sessionActive = false;
   setControlsPlacement();
@@ -1430,7 +1455,7 @@ document.addEventListener("visibilitychange", async () => {
     lastHiddenAt = Date.now();
     if (sessionActive) {
       focusInterruptions += 1;
-      playAlert();
+      audibleAlert("leave");
       showWarning("Page lost focus/visibility. Return to the page to continue the test.");
       logEvent("Switched away (page hidden) — wake lock may stop until you return");
       pauseTimer();
