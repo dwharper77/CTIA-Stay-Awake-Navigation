@@ -292,6 +292,7 @@
       <button id="navButton" class="btn btn-primary">Start Navigation</button>
       <button id="fullscreenButton" class="btn btn-neutral" type="button">Enter Fullscreen</button>
       <button id="installButton" class="btn btn-success" type="button" style="display:none;">Install App</button>
+      <button id="verifyMapsButton" class="btn btn-neutral" type="button">Verify Maps</button>
     </div>
   </div>
 
@@ -925,7 +926,7 @@ function updateDiagnostics() {
   // Simple signal only: when the user pressed Start Navigation.
   setText(
     "diagMaps",
-    lastNavTapAt ? `Google Maps: Start Navigation started at ${formatTime(lastNavTapAt)}` : "Google Maps: Not started"
+    lastNavTapAt ? `Google Maps: last request at ${formatTime(lastNavTapAt)}` : "Google Maps: Not started"
   );
 
   // Persistent storage visibility
@@ -1589,30 +1590,32 @@ if ("serviceWorker" in navigator) {
   });
 }
 
-document.getElementById("navButton").onclick = () => {
-  // Important: Wake Lock is tied to THIS page/tab. If we navigate away in the same tab,
-  // the browser must release the wake lock.
-  setStatus("Opening navigation… (wake lock will release when leaving this page)");
+function openMapsBestEffort({ purpose, destinationLabel }) {
+  // Note: browsers don't allow checking if Maps is already running.
+  // This just attempts to bring Maps forward (or open it).
 
   lastNavTapAt = Date.now();
-  logEvent("Start Navigation tapped");
+  logEvent(`${purpose} tapped`);
   mapsLaunchState = "Launch requested";
   mapsLaunchNote = "Waiting to see if the page backgrounds (best-effort signal).";
   updateDiagnostics();
 
-  const destination = encodeURIComponent("Starbucks");
-  const webUrl = `https://www.google.com/maps/dir/?api=1&destination=${destination}&travelmode=driving&dir_action=navigate`;
+  const hasDestination = !!(destinationLabel && String(destinationLabel).trim());
+  const destination = hasDestination ? encodeURIComponent(String(destinationLabel).trim()) : "";
+  const webUrl = hasDestination
+    ? `https://www.google.com/maps/dir/?api=1&destination=${destination}&travelmode=driving&dir_action=navigate`
+    : "https://www.google.com/maps";
 
-  // iOS: attempt to deep-link into the Google Maps app if installed.
-  // If it fails (not installed / blocked), fall back to the web URL.
+  // iOS
   if (isIOS) {
     mapsLaunchState = "Launching (attempting Google Maps app)…";
     mapsLaunchNote = "iOS will prompt if allowed; otherwise falls back to web.";
     updateDiagnostics();
 
-    // Google Maps URL scheme docs: comgooglemaps://
-    // Use daddr for destination, directionsmode for driving.
-    const appUrl = `comgooglemaps://?daddr=${destination}&directionsmode=driving`;
+    const appUrl = hasDestination
+      ? `comgooglemaps://?daddr=${destination}&directionsmode=driving`
+      : "comgooglemaps://";
+
     const startVisibility = document.visibilityState;
     const startTime = Date.now();
     window.location.href = appUrl;
@@ -1622,7 +1625,7 @@ document.getElementById("navButton").onclick = () => {
       const elapsed = Date.now() - startTime;
       if (stillVisible && elapsed >= 1200) {
         mapsLaunchState = "Google Maps app not detected";
-        mapsLaunchNote = "Install Google Maps (or allow opening app links) to use Start Navigation.";
+        mapsLaunchNote = "Install Google Maps (or allow opening app links) to use this button.";
         updateDiagnostics();
         showWarning("Google Maps app was not opened. Install Google Maps (or allow opening app links), then try again.");
         logEvent("Google Maps app not detected (no fallback to web)");
@@ -1636,28 +1639,26 @@ document.getElementById("navButton").onclick = () => {
     return;
   }
 
-  // On Android this typically deep-links into the Google Maps app (recommended).
-  // If it doesn't, it will still open the Maps website.
+  // Android
   if (isAndroid) {
     mapsLaunchState = "Launching (attempting Maps app)…";
     mapsLaunchNote = "If the page backgrounds, Maps likely opened.";
     updateDiagnostics();
 
-    // Prefer a direct navigation intent first.
-    // If this fails (e.g., Maps not installed), we fall back to the web URL.
-    const intentUrl = `intent://maps.google.com/maps?daddr=${destination}&directionsmode=driving#Intent;scheme=https;package=com.google.android.apps.maps;end`;
+    const intentUrl = hasDestination
+      ? `intent://maps.google.com/maps?daddr=${destination}&directionsmode=driving#Intent;scheme=https;package=com.google.android.apps.maps;end`
+      : "intent://maps.google.com/maps#Intent;scheme=https;package=com.google.android.apps.maps;end";
 
     const startVisibility = document.visibilityState;
     const startTime = Date.now();
     window.location.href = intentUrl;
 
-    // If we stay visible, assume the intent didn’t switch apps and fall back to web.
     window.setTimeout(() => {
       const stillVisible = document.visibilityState === startVisibility && document.visibilityState === "visible";
       const elapsed = Date.now() - startTime;
       if (stillVisible && elapsed >= 1200) {
         mapsLaunchState = "Google Maps app not detected";
-        mapsLaunchNote = "Install Google Maps (or allow opening app links) to use Start Navigation.";
+        mapsLaunchNote = "Install Google Maps (or allow opening app links) to use this button.";
         updateDiagnostics();
         showWarning("Google Maps app was not opened. Install Google Maps (or allow opening app links), then try again.");
         logEvent("Google Maps app not detected (no fallback to web)");
@@ -1671,11 +1672,21 @@ document.getElementById("navButton").onclick = () => {
     return;
   }
 
-  // Non-Android fallback
+  // Other browsers
   mapsLaunchState = "Opening Maps web";
   mapsLaunchNote = "Wake lock will only apply while this page is foreground.";
   updateDiagnostics();
   window.location.href = webUrl;
+}
+
+document.getElementById("navButton").onclick = () => {
+  setStatus("Opening navigation… (wake lock will release when leaving this page)");
+  openMapsBestEffort({ purpose: "Start Navigation", destinationLabel: "Starbucks" });
+};
+
+document.getElementById("verifyMapsButton").onclick = () => {
+  setStatus("Verifying Google Maps…");
+  openMapsBestEffort({ purpose: "Verify Maps", destinationLabel: "" });
 };
 </script>
 
