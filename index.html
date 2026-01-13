@@ -322,6 +322,7 @@
   <section id="details" class="card">
     <h2>Diagnostics</h2>
     <div id="diagUrl" class="kv"></div>
+    <div id="diagDisplayMode" class="kv"></div>
     <div id="diagWakeSupport" class="kv"></div>
     <div id="diagWakeState" class="kv"></div>
     <div id="diagMaps" class="kv"></div>
@@ -838,6 +839,24 @@ function getWakeLockStateText() {
 
 function updateDiagnostics() {
   setText("diagUrl", `URL: ${window.location.href}`);
+
+  // Display mode (helps confirm when installed as an app)
+  let displayMode = "browser";
+  try {
+    if (window.matchMedia && window.matchMedia("(display-mode: fullscreen)").matches) {
+      displayMode = "fullscreen";
+    } else if (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches) {
+      displayMode = "standalone";
+    }
+  } catch {
+    // ignore
+  }
+  if (isFullscreenNow()) {
+    // If the Fullscreen API is active, that's the best immediate signal.
+    displayMode = "fullscreen";
+  }
+  setText("diagDisplayMode", `Display mode: ${displayMode}`);
+
   setText(
     "diagWakeSupport",
     `Wake Lock: ${isIOS ? "iOS fallback (silent video)" : (("wakeLock" in navigator) ? "Supported" : "Not supported")}`
