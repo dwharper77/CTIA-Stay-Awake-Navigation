@@ -23,6 +23,7 @@
     <section class="card">
       <h2 class="card-title">Navigation Session</h2>
 
+      <button id="mapsBtn" class="primary-btn" style="margin-bottom:12px;">Start Maps</button>
       <button id="startBtn" class="primary-btn">Start Session</button>
 
       <div class="status-block">
@@ -35,8 +36,11 @@
   <footer class="app-footer">
     <p>v1.0 • Circet Tools</p>
   </footer>
-  <div style="text-align:center; color:#ff7a00; font-size:0.9em; margin-bottom:8px;">Rev-2</div>
+  <div style="text-align:center; color:#ff7a00; font-size:0.9em; margin-bottom:8px;">Rev-3</div>
 
+  <script>
+    document.getElementById('mapsBtn').onclick = launchMaps;
+  </script>
   <script src="main.js"></script>
 </body>
 </html>
