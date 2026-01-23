@@ -51,11 +51,22 @@ function startTimer() {
 }
 
 // -----------------------------
-// Launch Google Maps
+// Launch Google Maps (platform aware)
 // -----------------------------
 function launchMaps() {
-  const mapsURL = "https://www.google.com/maps";
-  window.location.href = mapsURL;
+  const androidIntent =
+    "intent://maps.google.com/#Intent;scheme=https;package=com.google.android.apps.maps;end";
+  const iosURL = "maps://";
+
+  const ua = navigator.userAgent.toLowerCase();
+
+  if (ua.includes("android")) {
+    window.open(androidIntent, "_blank");
+  } else if (ua.includes("iphone") || ua.includes("ipad")) {
+    window.open(iosURL, "_blank");
+  } else {
+    window.open("https://www.google.com/maps", "_blank");
+  }
 }
 
 // -----------------------------
@@ -67,11 +78,6 @@ startBtn.addEventListener("click", async () => {
 
   await requestWakeLock();
   startTimer();
-
-  // Delay slightly so UI updates before switching apps
-  setTimeout(() => {
-    launchMaps();
-  }, 500);
 });
 
 // -----------------------------
