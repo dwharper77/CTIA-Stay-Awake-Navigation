@@ -73,3 +73,12 @@ startBtn.addEventListener("click", async () => {
     launchMaps();
   }, 500);
 });
+
+// -----------------------------
+// PWA Service Worker Registration
+// -----------------------------
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', function() {
+    navigator.serviceWorker.register('sw.js');
+  });
+}
