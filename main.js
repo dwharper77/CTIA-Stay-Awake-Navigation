@@ -14,6 +14,7 @@ async function requestWakeLock() {
     console.log("Wake lock acquired");
 
     wakeLock.addEventListener("release", () => {
+    const wakeAlert = document.getElementById("wakeAlert");
       console.log("Wake lock was released");
       wakeStatus.textContent = "Lost  Reacquiring";
       wakeLock = null;
@@ -29,6 +30,10 @@ async function requestWakeLock() {
 // Reacquire loop (no session reset)
 setInterval(async () => {
   if (!wakeLock) {
+          if (wakeAlert) {
+            wakeAlert.currentTime = 0;
+            wakeAlert.play().catch(() => {});
+          }
     try {
       await requestWakeLock();
     } catch (err) {
