@@ -1,3 +1,9 @@
+.version-info {
+  font-size: 0.98em;
+  color: #ff7a00;
+  margin-top: 8px;
+  margin-bottom: 0;
+}
 /* When session is running, slide the card completely off the page */
 .session-running .app-main {
   align-items: flex-start;
