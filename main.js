@@ -1,9 +1,7 @@
 
 let wakeLock = null;
-let wakeInterruptions = 0;
 
 const wakeStatus = document.getElementById("wakeStatus");
-const interruptionCount = document.getElementById("interruptionCount");
 
 // -----------------------------
 // Wake Lock Logic
@@ -19,8 +17,6 @@ async function requestWakeLock() {
       console.log("Wake lock was released");
       wakeStatus.textContent = "Lost  Reacquiring";
       wakeLock = null;
-      wakeInterruptions++;
-      if (interruptionCount) interruptionCount.textContent = wakeInterruptions;
     });
   } catch (err) {
     console.error("Wake lock error:", err);
