@@ -62,9 +62,71 @@ function launchMaps() {
 }
 
 
-// Request wake lock on page load
+
+// --- GPS Logging & Diagnostics ---
+let gpsLog = [];
+let gpsFixCount = 0;
+let gpsInterruptCount = 0;
+let lastFixTimestamp = null;
+let gpsIntervalId = null;
+
+function startGPSLogging() {
+  if (gpsIntervalId) return; // Already running
+  gpsIntervalId = setInterval(() => {
+    let gotFix = false;
+    let fixTimeout = setTimeout(() => {
+      if (!gotFix) {
+        recordInterrupt();
+        updateGPSUI();
+      }
+    }, 4000); // 4s interruption threshold
+
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        gotFix = true;
+        clearTimeout(fixTimeout);
+        recordFix(position);
+        updateGPSUI();
+      },
+      (err) => {
+        clearTimeout(fixTimeout);
+        recordInterrupt();
+        updateGPSUI();
+      },
+      { enableHighAccuracy: true, timeout: 3500, maximumAge: 0 }
+    );
+  }, 2000);
+}
+
+function recordFix(position) {
+  gpsLog.push(position);
+  gpsFixCount++;
+  lastFixTimestamp = Date.now();
+}
+
+function recordInterrupt() {
+  gpsInterruptCount++;
+}
+
+function getFixAge() {
+  if (!lastFixTimestamp) return '--';
+  return Math.floor((Date.now() - lastFixTimestamp) / 1000);
+}
+
+function updateGPSUI() {
+  const fixEl = document.getElementById('gpsFixCount');
+  const intEl = document.getElementById('gpsInterruptCount');
+  const ageEl = document.getElementById('gpsFixAge');
+  if (fixEl) fixEl.textContent = gpsFixCount;
+  if (intEl) intEl.textContent = gpsInterruptCount;
+  if (ageEl) ageEl.textContent = getFixAge();
+}
+
+// Request wake lock and start GPS logging on page load
 window.addEventListener("DOMContentLoaded", () => {
   requestWakeLock();
+  startGPSLogging();
+  setInterval(updateGPSUI, 1000); // Keep fix age fresh
 });
 
 // -----------------------------
