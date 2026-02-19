@@ -1197,7 +1197,27 @@ function buildCallKmlFromRows({ rows, docName, groupByParticipant = false }) {
   const buildingCol = c.building;
   const participantCol = c.participant;
   const stageCol = c.stage;
+  const testTypeCol = c.test_type;
   const locationSourceCol = c.location_source;
+
+  const normalizeKmlTestType = (value) => {
+    const raw = String(value ?? '').trim();
+    if (!raw) return '';
+    const lower = raw.toLowerCase();
+    if (lower === 'original') return '';
+    if (lower === 'retest') return 'Retest';
+    return raw;
+  };
+
+  const addCount = (obj, key, inc = 1) => {
+    const k = toKey(key) || '(blank)';
+    obj[k] = (obj[k] || 0) + inc;
+  };
+  const stageStats = {
+    input: {},
+    exported: {},
+    skippedNoCoords: {},
+  };
 
   const makeNode = () => ({ count: 0, items: [], children: new Map() });
   const root = makeNode();
@@ -1233,13 +1253,19 @@ function buildCallKmlFromRows({ rows, docName, groupByParticipant = false }) {
   };
 
   for (const r of rows) {
+    const stageBucket = stageCol ? toKey(r?.[stageCol]) : '';
+    addCount(stageStats.input, stageBucket);
+
     const rawActualLat = parseNumber(r?.[c.actual_lat]);
     const rawActualLon = parseNumber(r?.[c.actual_lon]);
     const fallbackLat = c.location_lat ? parseNumber(r?.[c.location_lat]) : null;
     const fallbackLon = c.location_lon ? parseNumber(r?.[c.location_lon]) : null;
     const actualLat = rawActualLat ?? fallbackLat;
     const actualLon = rawActualLon ?? fallbackLon;
-    if (actualLat === null || actualLon === null) continue;
+    if (actualLat === null || actualLon === null) {
+      addCount(stageStats.skippedNoCoords, stageBucket);
+      continue;
+    }
 
     const locLat = c.location_lat ? (parseNumber(r?.[c.location_lat]) ?? actualLat) : actualLat;
     const locLon = c.location_lon ? (parseNumber(r?.[c.location_lon]) ?? actualLon) : actualLon;
@@ -1273,6 +1299,7 @@ function buildCallKmlFromRows({ rows, docName, groupByParticipant = false }) {
 
     const buildingVal = buildingCol ? toKey(r?.[buildingCol]) : '';
     const stageVal = c.stage ? toKey(r?.[c.stage]) : '';
+    const testTypeVal = testTypeCol ? normalizeKmlTestType(r?.[testTypeCol]) : '';
     const participantVal = c.participant ? toKey(r?.[c.participant]) : '';
     const pathVal = c.path_id ? toKey(r?.[c.path_id]) : '';
     const pointVal = c.point_id ? toKey(r?.[c.point_id]) : '';
@@ -1280,12 +1307,14 @@ function buildCallKmlFromRows({ rows, docName, groupByParticipant = false }) {
     const nameBits = [];
     if (buildingVal) nameBits.push(buildingVal);
     if (stageVal) nameBits.push(stageVal);
+    if (testTypeVal === 'Retest') nameBits.push('Retest');
     if (pointVal) nameBits.push(pointVal);
     const placemarkName = nameBits.length ? nameBits.join(' • ') : 'Call Vector';
 
     const descLines = [];
     if (buildingVal) descLines.push(`Building: ${buildingVal}`);
     if (stageVal) descLines.push(`Stage: ${stageVal}`);
+    if (testTypeVal) descLines.push(`Test Type: ${testTypeVal}`);
     if (participantVal) descLines.push(`Participant: ${participantVal}`);
     if (pathVal) descLines.push(`Path ID: ${pathVal}`);
     if (pointVal) descLines.push(`Point ID: ${pointVal}`);
@@ -1315,6 +1344,19 @@ function buildCallKmlFromRows({ rows, docName, groupByParticipant = false }) {
     pm.push('</Placemark>');
 
     addPlacemark(r, pm.join(''));
+    addCount(stageStats.exported, stageBucket);
+  }
+
+  try {
+    const stageColName = stageCol || '(none)';
+    logDebug(`[KML DEBUG] Stage column used: ${stageColName}`);
+    logDebug(`[KML DEBUG] Input rows by stage: ${JSON.stringify(stageStats.input)}`);
+    logDebug(`[KML DEBUG] Exported rows by stage: ${JSON.stringify(stageStats.exported)}`);
+    if (Object.keys(stageStats.skippedNoCoords).length) {
+      logDebug(`[KML DEBUG] Skipped (missing lat/lon) by stage: ${JSON.stringify(stageStats.skippedNoCoords)}`);
+    }
+  } catch {
+    // ignore debug logging errors
   }
 
   const emitNode = (name, node) => {
@@ -1367,18 +1409,74 @@ async function exportCallsToKml() {
   const stageCol = callState.dimCols.stage;
   const locationSourceCol = callState.dimCols.location_source;
 
-  // Group records by building, then by test type
+  const normalizeTestType = (value) => {
+    const raw = String(value ?? '').trim();
+    if (!raw) return '';
+    const lower = raw.toLowerCase();
+    if (lower === 'original') return '';
+    if (lower === 'retest') return 'Retest';
+    return raw;
+  };
+
+  const summarizeBy = (inRows, colName) => {
+    const out = {};
+    if (!colName) return out;
+    for (const row of inRows) {
+      const key = toKey(row?.[colName]) || '(blank)';
+      out[key] = (out[key] || 0) + 1;
+    }
+    return out;
+  };
+
+  try {
+    logDebug(`[KML DEBUG] Export rows count: ${rows.length}`);
+    logDebug(`[KML DEBUG] Stage column detected: ${stageCol ?? '(none)'}`);
+    logDebug(`[KML DEBUG] Location Source column detected: ${locationSourceCol ?? '(none)'}`);
+    if (stageCol) logDebug(`[KML DEBUG] Filtered rows by stage: ${JSON.stringify(summarizeBy(rows, stageCol))}`);
+    if (locationSourceCol) logDebug(`[KML DEBUG] Filtered rows by location source: ${JSON.stringify(summarizeBy(rows, locationSourceCol))}`);
+  } catch {
+    // ignore debug logging errors
+  }
+
+  // Group records - split by test type only if building has explicit test type values
   const buildingGroups = {};
+  const buildingsWithTestType = new Set();
+  
   if (buildingCol) {
+    // Pass 1: identify which buildings have explicit test type values
     for (const row of rows) {
       const building = String(row?.[buildingCol] ?? 'Building').trim() || 'Building';
-      const testType = testTypeCol ? String(row?.[testTypeCol] ?? '').trim() : null;
-      
-      if (!buildingGroups[building]) buildingGroups[building] = {};
-      const typeKey = testType || 'All';
-      if (!buildingGroups[building][typeKey]) buildingGroups[building][typeKey] = [];
-      buildingGroups[building][typeKey].push(row);
+      if (testTypeCol) {
+        const rawVal = String(row?.[testTypeCol] ?? '').trim();
+        const testTypeVal = normalizeTestType(row?.[testTypeCol]);
+        if (testTypeVal) {
+          buildingsWithTestType.add(building);
+        }
+      }
     }
+    
+    console.log('[KML DEBUG] Buildings with test type values:', Array.from(buildingsWithTestType));
+    console.log('[KML DEBUG] Test type column:', testTypeCol);
+    
+    // Pass 2: group by building + test type (if applicable)
+    for (const row of rows) {
+      const building = String(row?.[buildingCol] ?? 'Building').trim() || 'Building';
+      if (!buildingGroups[building]) buildingGroups[building] = {};
+      
+      let testType = '';
+      if (buildingsWithTestType.has(building) && testTypeCol) {
+        testType = normalizeTestType(row?.[testTypeCol]) || '';
+      }
+      const groupKey = testType || 'All';
+      
+      if (!buildingGroups[building][groupKey]) buildingGroups[building][groupKey] = [];
+      buildingGroups[building][groupKey].push(row);
+    }
+    
+    console.log('[KML DEBUG] Final grouping:', Object.entries(buildingGroups).reduce((acc, [b, groups]) => {
+      acc[b] = Object.entries(groups).reduce((g, [k, v]) => { g[k] = v.length; return g; }, {});
+      return acc;
+    }, {}));
   } else {
     buildingGroups['Building'] = { 'All': rows };
   }
@@ -1391,7 +1489,9 @@ async function exportCallsToKml() {
     for (const testType of Object.keys(typeGroups).sort()) {
       const buildingRows = typeGroups[testType];
       const grouped = Boolean(participantCol || stageCol || locationSourceCol);
-      const docLabel = testType !== 'All' ? ` — ${testType}` : '';
+      const testTypeLower = String(testType ?? '').toLowerCase();
+      const isRetestGroup = testTypeLower === 'retest';
+      const docLabel = isRetestGroup ? ' — Retest' : '';
       const kml = buildCallKmlFromRows({
         rows: buildingRows,
         docName: grouped
@@ -1400,7 +1500,7 @@ async function exportCallsToKml() {
         groupByParticipant: grouped,
       });
       if (!kml) continue;
-      const typeFilePart = testType !== 'All' ? `_${safeFilePart(testType)}` : '';
+      const typeFilePart = isRetestGroup ? '_Retest' : '';
       const filename = `Call_Vectors_${safeFilePart(building)}${typeFilePart}_${grouped ? 'By_Participant_' : ''}${formatDateForFilename(dt)}.kml`;
       downloadTextFile({ filename, text: kml, mime: 'application/vnd.google-earth.kml+xml;charset=utf-8' });
       fileNames.push(filename);
@@ -1507,9 +1607,9 @@ function exportCurrentPivotToExcel() {
     if (base.toLowerCase() !== 'results') return sectionValue;
     const tt = testTypeByRowId.get(rowId);
     if (!tt || tt.size === 0) return sectionValue;
-    const labels = Array.from(tt);
-    if (labels.length === 1) return `${base} - ${labels[0]}`;
-    return `${base} - ${labels.join('/')}`;
+    const labelsLower = new Set(Array.from(tt, (v) => String(v ?? '').trim().toLowerCase()).filter(Boolean));
+    if (labelsLower.has('retest')) return `${base} - Retest`;
+    return base;
   };
 
   const makeSheetName = (() => {
@@ -1610,7 +1710,7 @@ function exportCurrentPivotToExcel() {
   }
   for (const building of Object.keys(buildingGroups)) {
     let aoaBuilding = [];
-    const SECTION_ORDER = ['Results', 'Results - Original', 'Results - Retest', 'Results - Original/Retest', 'Location Technology', 'Handet', 'Handset', 'Point ID', 'Point', 'Path ID', 'Path'];
+    const SECTION_ORDER = ['Results', 'Results - Retest', 'Location Technology', 'Handet', 'Handset', 'Point ID', 'Point', 'Path ID', 'Path'];
     const participantKey = getKeyForLabel('Participant');
     const sectionKey = getKeyForLabel('Section');
     const buildingRows = buildingGroups[building].map(rowId => {
@@ -1940,6 +2040,7 @@ function guessCallDimensionColumns(columns) {
   return {
     participant: detectColumn(columns, ['participant', 'carrier', 'name', 'user', 'person']),
     stage: detectColumn(columns, ['stage', 'stg', 'phase']),
+    test_type: detectColumn(columns, ['test_type', 'test type', 'testtype', 'run type', 'original/retest']),
     building: detectColumn(columns, [
       'building_id',
       'building id',
